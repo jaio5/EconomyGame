@@ -48,6 +48,7 @@
       worthHist: [],
       flow: [],
       stats: { produced: 0, revenue: 0, contractsDone: 0 },
+      mapView: { lat: 40.4168, lng: -3.7038, zoom: 16 },
     };
     addLog('Bienvenido. Tienes 10.000 $ para levantar tu imperio.', 'info');
     for (let i = 0; i < 3; i++) spawnOffer();
@@ -61,7 +62,9 @@
   const stored = () => Object.values(state.inv).reduce((a, b) => a + b, 0);
   const bid = (id) => state.market[id].price * (1 - SPREAD / 2);
   const ask = (id) => state.market[id].price * (1 + SPREAD / 2);
-  const buildingValue = (b) => BUILDINGS[b.type].cost * (1 + (b.level - 1) * 0.8) * 0.5;
+  const buildingValue = (b) => BUILDINGS[b.type].cost * (1 + (b.level - 1) * 0.8) * 0.5 + (b.site ? b.site.price * 0.8 : 0);
+  const maxLevel = (b) => (b.site ? b.site.maxLevel : MAX_LEVEL);
+  const ownerOf = (osmId) => state.buildings.find((b) => b.site && b.site.osmId === osmId);
   const upgradeCost = (b) => Math.round(BUILDINGS[b.type].cost * b.level * 0.8);
   const warehouseCost = () => 3000 * state.whLevel;
   const loanLimit = () => Math.max(0, Math.max(5000, netWorth() * 0.5) - state.debt);
@@ -178,19 +181,22 @@
   }
 
   /* ---------- buildings ---------- */
-  function build(type) {
+  // site (optional): a real map building { osmId, lat, lng, addr, area, price, maxLevel, geom }
+  function build(type, site = null) {
     const def = BUILDINGS[type];
-    if (state.cash < def.cost) return fail('Fondos insuficientes para construir.');
-    state.cash -= def.cost;
-    state.buildings.push({ uid: state.nextUid++, type, level: 1, on: true, status: 'idle', missing: null });
-    notify(`Construiste: ${def.name}.`, 'build');
+    const cost = def.cost + (site ? site.price : 0);
+    if (site && ownerOf(site.osmId)) return fail('Ya tienes un negocio en ese edificio.');
+    if (state.cash < cost) return fail('Fondos insuficientes para construir.');
+    state.cash -= cost;
+    state.buildings.push({ uid: state.nextUid++, type, level: 1, on: true, status: 'idle', missing: null, site });
+    notify(site ? `Abriste ${def.name} en ${site.addr}.` : `Construiste: ${def.name}.`, 'build');
     return true;
   }
 
   function upgrade(uid) {
     const b = state.buildings.find((x) => x.uid === uid);
     if (!b) return false;
-    if (b.level >= MAX_LEVEL) return fail('Nivel máximo alcanzado.');
+    if (b.level >= maxLevel(b)) return fail(b.site ? 'El edificio no tiene más espacio para ampliar.' : 'Nivel máximo alcanzado.');
     const cost = upgradeCost(b);
     if (state.cash < cost) return fail('Fondos insuficientes para mejorar.');
     state.cash -= cost;
@@ -395,6 +401,7 @@
       if (!raw) return null;
       const s = JSON.parse(raw);
       if (!s || s.v !== 1) return null;
+      if (!s.mapView) s.mapView = { lat: 40.4168, lng: -3.7038, zoom: 16 };
       state = s;
       return state;
     } catch (e) { return null; }
@@ -426,7 +433,7 @@
     newGame, load, save, reset, tick,
     on: (fn) => listeners.push(fn),
     capacity, stored, bid, ask, netWorth, change24h, profitPerHour, estimateMargin,
-    upgradeCost, warehouseCost, loanLimit, buildingValue, quoteBuy, quoteSell, maxBuy, LOAN_RATE,
+    upgradeCost, warehouseCost, maxLevel, ownerOf, loanLimit, buildingValue, quoteBuy, quoteSell, maxBuy, LOAN_RATE,
     buy, sell, build, upgrade, toggle, demolish, upgradeWarehouse, setAutoSell,
     acceptOffer, deliver, borrow, repay,
     fmtMoney, fmtQty, fmtTime,

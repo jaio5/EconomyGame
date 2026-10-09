@@ -14,6 +14,7 @@
 
   const VIEWS = [
     { id: 'dashboard', label: 'Resumen', icon: 'dashboard' },
+    { id: 'map', label: 'Mapa', icon: 'map' },
     { id: 'buildings', label: 'Producción', icon: 'factory' },
     { id: 'market', label: 'Mercado', icon: 'chart' },
     { id: 'warehouse', label: 'Almacén', icon: 'box' },
@@ -227,6 +228,18 @@
     return G.state.rivals.filter((r) => r.worth > w).length + 1;
   }
 
+  function statusBadge(b) {
+    const map = {
+      ok: ['ok', 'Produciendo'],
+      missing: ['warn', `Falta ${PRODUCTS[b.missing]?.name.toLowerCase() || 'insumo'}`],
+      full: ['bad', 'Almacén lleno'],
+      off: ['', 'Detenida'],
+      idle: ['', 'Arrancando'],
+    };
+    const [k, label] = map[b.status] || map.idle;
+    return `<span class="badge ${k}">${label}</span>`;
+  }
+
   /* ---------- buildings ---------- */
   views.buildings = {
     sig: () => G.state.buildings.map((b) => `${b.uid}:${b.level}:${b.on}`).join(','),
@@ -235,15 +248,16 @@
       const owned = s.buildings.length ? `
         <div class="card"><div class="owned-list">${s.buildings.map((b) => {
           const def = BUILDINGS[b.type];
-          const maxed = b.level >= G.MAX_LEVEL;
+          const maxed = b.level >= G.maxLevel(b);
           return `
           <div class="owned">
-            <div class="owned-name"><span class="level">N${b.level}</span><span>${esc(def.name)}</span></div>
+            <div class="owned-name"><span class="level">N${b.level}</span><span>${esc(def.name)}
+              ${b.site ? `<button class="link-btn" type="button" data-action="locate" data-uid="${b.uid}">${icon('pin')}${esc(b.site.addr)}</button>` : '<span class="owned-addr">Polígono genérico</span>'}</span></div>
             ${recipe(b.type, b.level)}
             <span data-c="st-${b.uid}"><span data-b="st-${b.uid}"></span></span>
             <div class="btn-row">
               <button class="btn btn-sm" type="button" data-action="upgrade" data-uid="${b.uid}" data-d="up-${b.uid}" ${maxed ? 'disabled' : ''}>
-                ${icon('up')}${maxed ? 'Nivel máx.' : `Mejorar <span class="btn-meta">${money(G.upgradeCost(b), 0)}</span>`}
+                ${icon('up')}${maxed ? (b.site ? 'Sin espacio' : 'Nivel máx.') : `Mejorar <span class="btn-meta">${money(G.upgradeCost(b), 0)}</span>`}
               </button>
               <button class="btn btn-sm btn-icon ${b.on ? '' : 'btn-ghost'}" type="button" data-action="toggle" data-uid="${b.uid}"
                 aria-pressed="${b.on}" aria-label="${b.on ? 'Detener' : 'Reanudar'} ${esc(def.name)}" data-tip="${b.on ? 'Detener producción' : 'Reanudar producción'}">${icon('power')}</button>
@@ -270,15 +284,15 @@
             <div><span>Salarios / h</span><span>${money(def.wage, 0)}</span></div>
           </div>
           <div class="actions">
-            <button class="btn btn-primary btn-grow" type="button" data-action="build" data-type="${type}" data-d="b-${type}">
-              ${icon('plus')}Construir <span class="btn-meta">${money(def.cost, 0)}</span>
+            <button class="btn btn-primary btn-grow" type="button" data-action="place" data-type="${type}" data-d="b-${type}">
+              ${icon('pin')}Elegir ubicación <span class="btn-meta">desde ${money(def.cost, 0)}</span>
             </button>
           </div>
         </article>`).join('');
 
       return `
         <div class="page-head">
-          <div><h1 class="page-title">Producción</h1><p class="page-sub">Construye instalaciones y encadena su producción. Los insumos salen de tu almacén; si faltan, la planta se detiene y paga medio salario.</p></div>
+          <div><h1 class="page-title">Producción</h1><p class="page-sub">Abre negocios en edificios reales del mapa y encadena su producción. El precio final suma el local según su tamaño y zona. Los insumos salen de tu almacén; si faltan, la planta se detiene y paga medio salario.</p></div>
         </div>
         <h2 class="section-title">Tus instalaciones <span class="muted mono" style="letter-spacing:0">${s.buildings.length}</span></h2>
         ${owned}
@@ -288,16 +302,8 @@
     update() {
       const s = G.state;
       for (const b of s.buildings) {
-        const map = {
-          ok: ['ok', 'Produciendo'],
-          missing: ['warn', `Falta ${PRODUCTS[b.missing]?.name.toLowerCase() || 'insumo'}`],
-          full: ['bad', 'Almacén lleno'],
-          off: ['', 'Detenida'],
-          idle: ['', 'Arrancando'],
-        };
-        const [k, label] = map[b.status] || map.idle;
-        bind(`st-${b.uid}`, `<span class="badge ${k}">${label}</span>`);
-        dis(`up-${b.uid}`, b.level >= G.MAX_LEVEL || s.cash < G.upgradeCost(b));
+        bind(`st-${b.uid}`, statusBadge(b));
+        dis(`up-${b.uid}`, b.level >= G.maxLevel(b) || s.cash < G.upgradeCost(b));
       }
       for (const [type, def] of Object.entries(BUILDINGS)) {
         const m = G.estimateMargin(type);
@@ -592,12 +598,20 @@
       .sort((a, b) => b.worth - a.worth);
   }
 
+  /* ---------- map ---------- */
+  views.map = window.createMapView({ ui, icon, esc, money, recipe, statusBadge, refresh: () => refresh(), go: (v) => go(v) });
+
   /* ---------- render orchestration ---------- */
+  let mounted = null;
   function renderView() {
     const v = views[ui.view];
     const main = $('#main');
     const focusedId = document.activeElement?.id;
+    if (mounted && mounted.unmount) mounted.unmount();
     main.innerHTML = v.render();
+    main.dataset.view = ui.view;
+    mounted = v;
+    if (v.mount) v.mount(main);
     ui.sig = v.sig ? v.sig() : '';
     v.update();
     if (focusedId) document.getElementById(focusedId)?.focus();
@@ -624,7 +638,7 @@
     renderNav();
     renderView();
     $('#main').focus({ preventScroll: true });
-    window.scrollTo({ top: 0 });
+    if (view !== 'map') window.scrollTo({ top: 0 });
   }
 
   /* ---------- toasts ---------- */
@@ -684,7 +698,8 @@
       case 'buy': G.buy(ui.selected, ui.tradeQty); afterAction(); break;
       case 'sell': G.sell(ui.selected, ui.tradeQty); afterAction(); break;
       case 'sellall': G.sell(t.dataset.id, s.inv[t.dataset.id]); afterAction(); break;
-      case 'build': if (G.build(t.dataset.type)) refresh(); break;
+      case 'place': ui.placing = t.dataset.type; go('map'); break;
+      case 'locate': ui.locate = Number(t.dataset.uid); go('map'); break;
       case 'upgrade': G.upgrade(Number(t.dataset.uid)); refresh(); break;
       case 'toggle': G.toggle(Number(t.dataset.uid)); refresh(); break;
       case 'demolish': if (confirmFirst(t, 'Confirmar')) { G.demolish(Number(t.dataset.uid)); refresh(); } break;
